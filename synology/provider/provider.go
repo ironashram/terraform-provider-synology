@@ -398,6 +398,7 @@ func (p *SynologyProvider) DataSources(ctx context.Context) []func() datasource.
 func (p *SynologyProvider) Functions(ctx context.Context) []func() function.Function {
 	return []func() function.Function{
 		NewISOFunction,
+		NewISOBase64Function,
 		NewMkPasswdFunction,
 		NewIniEncodeFunction,
 	}

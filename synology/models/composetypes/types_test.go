@@ -152,7 +152,7 @@ func TestParsePortConfig(t *testing.T) {
 		},
 		{
 			value:         "9999999",
-			expectedError: "Invalid containerPort: 9999999",
+			expectedError: "invalid containerPort: 9999999",
 		},
 		{
 			value:         "80/xyz",

@@ -23,6 +23,7 @@ A image on the Synology NAS Imagestation.
 
 - `auto_clean` (Boolean) Determine whether to automatically clean task info when the task finishes. It will be automatically cleaned in a minute after task finishes.
 - `content` (String, Sensitive) The raw file contents to upload as a guest image.
+- `content_base64` (String, Sensitive) Base64-encoded file contents to upload as a guest image. Use with the `provider::synology::iso()` function.
 - `path` (String) The file on the DiskStation. Note: the path should begin with a shared folder. Use this to create an image from an existing file on the NAS.
 - `storage_id` (String) ID of the storage device. If not specified, it will be resolved from storage_name.
 - `storage_name` (String) Name of the storage device.

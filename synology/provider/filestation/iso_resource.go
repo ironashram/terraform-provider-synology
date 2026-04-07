@@ -84,7 +84,7 @@ func (f *IsoResource) Create(
 		isoFiles[file.Path] = file.Content
 	}
 
-	iso, err := util.IsoFromFiles(ctx, data.VolumeName.ValueString(), isoFiles)
+	isoBytes, err := util.IsoFromFiles(ctx, data.VolumeName.ValueString(), isoFiles)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to create ISO", err.Error())
 		return
@@ -93,7 +93,7 @@ func (f *IsoResource) Create(
 	// Upload the file
 	_, err = f.client.Upload(ctx, fileDir, form.File{
 		Name:    fileName,
-		Content: iso,
+		Content: string(isoBytes),
 	}, createParents, overwrite)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -218,7 +218,7 @@ func (f *IsoResource) Update(
 		isoFiles[file.Path] = file.Content
 	}
 
-	iso, err := util.IsoFromFiles(ctx, data.VolumeName.ValueString(), isoFiles)
+	isoBytes, err := util.IsoFromFiles(ctx, data.VolumeName.ValueString(), isoFiles)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to create ISO", err.Error())
 		return
@@ -227,7 +227,7 @@ func (f *IsoResource) Update(
 	// Upload the file
 	_, err = f.client.Upload(ctx, fileDir, form.File{
 		Name:    fileName,
-		Content: iso,
+		Content: string(isoBytes),
 	}, data.CreateParents.ValueBool(),
 		true)
 	if err != nil {

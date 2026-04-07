@@ -117,8 +117,8 @@ func runAcceptanceTests(m *testing.M) int {
 	httpsEndpoint := fmt.Sprintf("https://%s:%s", host, mappedPortHttps.Port())
 	logger.Printf("DSM Https Endpoint: %s", httpsEndpoint)
 
-	const user = "admin"
-	const password = "synology"
+	const user = "terraform"
+	const password = "Syn0logy"
 
 	logger.Printf("DSM endpoint: %s", httpsEndpoint)
 

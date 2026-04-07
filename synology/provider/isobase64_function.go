@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/function"
@@ -9,19 +10,19 @@ import (
 	"github.com/synology-community/terraform-provider-synology/synology/util"
 )
 
-var _ function.Function = &ISOFunction{}
+var _ function.Function = &ISOBase64Function{}
 
-type ISOFunction struct{}
+type ISOBase64Function struct{}
 
-func (r *ISOFunction) Metadata(
+func (r *ISOBase64Function) Metadata(
 	_ context.Context,
 	req function.MetadataRequest,
 	resp *function.MetadataResponse,
 ) {
-	resp.Name = "iso"
+	resp.Name = "isobase64"
 }
 
-func (r *ISOFunction) Definition(
+func (r *ISOBase64Function) Definition(
 	ctx context.Context,
 	req function.DefinitionRequest,
 	resp *function.DefinitionResponse,
@@ -44,7 +45,7 @@ func (r *ISOFunction) Definition(
 	}
 }
 
-func (r *ISOFunction) Run(
+func (r *ISOBase64Function) Run(
 	ctx context.Context,
 	req function.RunRequest,
 	resp *function.RunResponse,
@@ -77,10 +78,10 @@ func (r *ISOFunction) Run(
 	}
 
 	resp.Error = function.ConcatFuncErrors(
-		resp.Result.Set(ctx, string(iso)),
+		resp.Result.Set(ctx, base64.StdEncoding.EncodeToString(iso)),
 	)
 }
 
-func NewISOFunction() function.Function {
-	return &ISOFunction{}
+func NewISOBase64Function() function.Function {
+	return &ISOBase64Function{}
 }

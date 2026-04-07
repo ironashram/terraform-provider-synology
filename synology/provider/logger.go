@@ -3,61 +3,96 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
+const (
+	subsystem = "api-client"
+)
+
 type SynoLogger struct {
 	ctx context.Context
+	mu  sync.Mutex
 }
 
 func NewLogger(ctx context.Context) *SynoLogger {
 	return &SynoLogger{
-		ctx: ctx,
+		ctx: tflog.NewSubsystem(ctx, subsystem),
 	}
+}
+
+// log factors the mutex lock/unlock boilerplate into one place.
+func (l *SynoLogger) log(fn func()) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	fn()
 }
 
 func (l *SynoLogger) Error(msg string, keysAndValues ...any) {
-	additionalFields, err := l.convertToAdditionalFields(keysAndValues)
-	if err != nil {
-		tflog.Error(l.ctx, fmt.Sprintf("Error converting keys and values: %v", err))
-		return
-	}
-	tflog.Error(l.ctx, msg, additionalFields)
+	l.log(func() {
+		fields, err := convertToFields(keysAndValues)
+		if err != nil {
+			tflog.SubsystemError(
+				l.ctx,
+				subsystem,
+				fmt.Sprintf("invalid log key-value pairs: %s", err),
+			)
+		}
+		tflog.SubsystemError(l.ctx, subsystem, msg, fields)
+	})
 }
 
 func (l *SynoLogger) Printf(format string, v ...any) {
-	tflog.Info(l.ctx, fmt.Sprintf(format, v...))
+	l.log(func() {
+		tflog.SubsystemInfo(l.ctx, subsystem, fmt.Sprintf(format, v...))
+	})
 }
 
 func (l *SynoLogger) Info(msg string, keysAndValues ...any) {
-	additionalFields, err := l.convertToAdditionalFields(keysAndValues)
-	if err != nil {
-		tflog.Error(l.ctx, fmt.Sprintf("Error converting keys and values: %v", err))
-		return
-	}
-	tflog.Info(l.ctx, msg, additionalFields)
+	l.log(func() {
+		fields, err := convertToFields(keysAndValues)
+		if err != nil {
+			tflog.SubsystemError(
+				l.ctx,
+				subsystem,
+				fmt.Sprintf("invalid log key-value pairs: %s", err),
+			)
+		}
+		tflog.SubsystemInfo(l.ctx, subsystem, msg, fields)
+	})
 }
 
 func (l *SynoLogger) Debug(msg string, keysAndValues ...any) {
-	additionalFields, err := l.convertToAdditionalFields(keysAndValues)
-	if err != nil {
-		tflog.Error(l.ctx, fmt.Sprintf("Error converting keys and values: %v", err))
-		return
-	}
-	tflog.Debug(l.ctx, msg, additionalFields)
+	l.log(func() {
+		fields, err := convertToFields(keysAndValues)
+		if err != nil {
+			tflog.SubsystemError(
+				l.ctx,
+				subsystem,
+				fmt.Sprintf("invalid log key-value pairs: %s", err),
+			)
+		}
+		tflog.SubsystemDebug(l.ctx, subsystem, msg, fields)
+	})
 }
 
 func (l *SynoLogger) Warn(msg string, keysAndValues ...any) {
-	additionalFields, err := l.convertToAdditionalFields(keysAndValues)
-	if err != nil {
-		tflog.Error(l.ctx, fmt.Sprintf("Error converting keys and values: %v", err))
-		return
-	}
-	tflog.Warn(l.ctx, msg, additionalFields)
+	l.log(func() {
+		fields, err := convertToFields(keysAndValues)
+		if err != nil {
+			tflog.SubsystemError(
+				l.ctx,
+				subsystem,
+				fmt.Sprintf("invalid log key-value pairs: %s", err),
+			)
+		}
+		tflog.SubsystemWarn(l.ctx, subsystem, msg, fields)
+	})
 }
 
-func (l *SynoLogger) convertToAdditionalFields(keysAndValues []any) (map[string]any, error) {
+func convertToFields(keysAndValues []any) (map[string]any, error) {
 	additionalFields := make(map[string]any, len(keysAndValues)/2)
 	for i := 0; i < len(keysAndValues); i += 2 {
 		if i+1 >= len(keysAndValues) {

@@ -2,6 +2,7 @@ package virtualization
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"strings"
@@ -37,16 +38,17 @@ type ImageResource struct {
 
 // ImageResourceModel describes the resource data model.
 type ImageResourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Path        types.String `tfsdk:"path"`
-	Content     types.String `tfsdk:"content"`
-	Url         types.String `tfsdk:"url"`
-	AutoClean   types.Bool   `tfsdk:"auto_clean"`
-	ImageType   types.String `tfsdk:"image_type"`
-	StorageID   types.String `tfsdk:"storage_id"`
-	StorageName types.String `tfsdk:"storage_name"`
-	UsedSize    types.Int64  `tfsdk:"used_size"`
+	ID            types.String `tfsdk:"id"`
+	Name          types.String `tfsdk:"name"`
+	Path          types.String `tfsdk:"path"`
+	Content       types.String `tfsdk:"content"`
+	ContentBase64 types.String `tfsdk:"content_base64"`
+	Url           types.String `tfsdk:"url"`
+	AutoClean     types.Bool   `tfsdk:"auto_clean"`
+	ImageType     types.String `tfsdk:"image_type"`
+	StorageID     types.String `tfsdk:"storage_id"`
+	StorageName   types.String `tfsdk:"storage_name"`
+	UsedSize      types.Int64  `tfsdk:"used_size"`
 }
 
 // Schema implements resource.Resource.
@@ -74,6 +76,7 @@ func (f *ImageResource) Schema(
 					stringvalidator.ExactlyOneOf(
 						path.MatchRoot("path"),
 						path.MatchRoot("content"),
+						path.MatchRoot("content_base64"),
 						path.MatchRoot("url"),
 					),
 				},
@@ -83,6 +86,14 @@ func (f *ImageResource) Schema(
 			},
 			"content": schema.StringAttribute{
 				MarkdownDescription: "The raw file contents to upload as a guest image.",
+				Optional:            true,
+				Sensitive:           true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"content_base64": schema.StringAttribute{
+				MarkdownDescription: "Base64-encoded file contents to upload as a guest image. Use with the `provider::synology::iso()` function.",
 				Optional:            true,
 				Sensitive:           true,
 				PlanModifiers: []planmodifier.String{
@@ -150,13 +161,24 @@ func (f *ImageResource) Create(
 	defer cancel()
 
 	isUpload := (!data.Content.IsNull() && !data.Content.IsUnknown()) ||
+		(!data.ContentBase64.IsNull() && !data.ContentBase64.IsUnknown()) ||
 		(!data.Url.IsNull() && !data.Url.IsUnknown())
 
 	if isUpload {
 		// Upload mode: upload file content to create a new guest image
 		var fileContent string
 
-		if !data.Content.IsNull() && !data.Content.IsUnknown() {
+		if !data.ContentBase64.IsNull() && !data.ContentBase64.IsUnknown() {
+			decoded, err := base64.StdEncoding.DecodeString(data.ContentBase64.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddError(
+					"Failed to decode content_base64",
+					fmt.Sprintf("content_base64 is not valid base64: %s", err),
+				)
+				return
+			}
+			fileContent = string(decoded)
+		} else if !data.Content.IsNull() && !data.Content.IsUnknown() {
 			fileContent = data.Content.ValueString()
 		} else {
 			dresp, err := retryablehttp.NewClient().Get(data.Url.ValueString())

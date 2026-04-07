@@ -29,7 +29,7 @@ func IsoFromFiles(
 	ctx context.Context,
 	volumeIdentifier string,
 	files map[string]string,
-) (string, error) {
+) ([]byte, error) {
 	writer, err := iso9660.NewWriter()
 	if err != nil {
 		tflog.Error(ctx, fmt.Sprintf("failed to create writer: %v", err))
@@ -41,26 +41,25 @@ func IsoFromFiles(
 		if len(path) > 0 {
 			if err = writer.AddFile(strings.NewReader(content), path); err != nil {
 				tflog.Error(ctx, fmt.Sprintf("failed to add metadata file: %v", err))
-				return "", err
+				return nil, err
 			}
 		}
-	}
-
-	var b bytes.Buffer
-	err = writer.WriteTo(&b, volumeIdentifier)
-	if err != nil {
-		tflog.Error(ctx, fmt.Sprintf("failed to write ISO image: %s", err))
-		return "", err
 	}
 
 	defer func() {
 		_ = writer.Cleanup()
 	}()
 
-	return b.String(), nil
+	var b bytes.Buffer
+	if err = writer.WriteTo(&b, volumeIdentifier); err != nil {
+		tflog.Error(ctx, fmt.Sprintf("failed to write ISO image: %s", err))
+		return nil, err
+	}
+
+	return b.Bytes(), nil
 }
 
-func IsoFromCloudInit(ctx context.Context, ci CloudInit) (string, error) {
+func IsoFromCloudInit(ctx context.Context, ci CloudInit) ([]byte, error) {
 	fileMap := map[string]string{}
 	if ci.MetaData != "" {
 		fileMap[metaDataFileName] = ci.MetaData

@@ -74,7 +74,7 @@ func (f *CloudInitResource) Create(
 	userData := data.UserData.ValueString()
 	networkConfig := data.NetworkConfig.ValueString()
 
-	iso, err := util.IsoFromCloudInit(ctx, util.CloudInit{
+	isoBytes, err := util.IsoFromCloudInit(ctx, util.CloudInit{
 		UserData:      userData,
 		MetaData:      metaData,
 		NetworkConfig: networkConfig,
@@ -90,7 +90,7 @@ func (f *CloudInitResource) Create(
 	// Upload the file
 	_, err = f.client.Upload(ctx, fileDir, form.File{
 		Name:    fileName,
-		Content: iso,
+		Content: string(isoBytes),
 	}, createParents, overwrite)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -204,7 +204,7 @@ func (f *CloudInitResource) Update(
 	userData := data.UserData.ValueString()
 	networkConfig := data.NetworkConfig.ValueString()
 
-	iso, err := util.IsoFromCloudInit(ctx, util.CloudInit{
+	isoBytes, err := util.IsoFromCloudInit(ctx, util.CloudInit{
 		UserData:      userData,
 		MetaData:      metaData,
 		NetworkConfig: networkConfig,
@@ -219,7 +219,7 @@ func (f *CloudInitResource) Update(
 
 	file := form.File{
 		Name:    fileName,
-		Content: iso,
+		Content: string(isoBytes),
 	}
 
 	// Upload the file

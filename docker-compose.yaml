@@ -24,7 +24,49 @@ services:
       timeout: 5s
       retries: 30
       start_period: 120s
+    configs:
+      - source: dsm-init
+        target: /etc/rc.local
+        mode: 0755
+        uid: "0"
+        gid: "0"
 
 volumes:
   dsm-storage:
     driver: local
+
+configs:
+  dsm-init:
+    content: |
+      #!/bin/sh
+
+      for CONF in /etc/synoinfo.conf /etc.defaults/synoinfo.conf; do
+          if grep -q "strong_password_enable" "$CONF"; then
+              sed -i 's/strong_password_enable="yes"/strong_password_enable="no"/' "$CONF"
+          else
+              echo 'strong_password_enable="no"' >> "$CONF"
+          fi
+      done
+
+      # 1. Create the 'terraform' user
+      # Parameters: --add [username] [password] [full_name] [expired: 0] [email] [privilege: 0]
+      if ! synouser --get terraform > /dev/null 2>&1; then
+          synouser --add terraform "Syn0logy" "Terraform Automation" 0 terraform@local.host 0
+          echo "User 'terraform' created successfully."
+      else
+          echo "User 'terraform' already exists. Synchronizing password..."
+          synouser --setpw terraform "Syn0logy"
+      fi
+
+      # 2. Grant Administrative Privileges
+      # Adding the user to the 'administrators' group (GID 101) provides full DSM access
+      synogroup --member administrators terraform
+      synogroup --member users terraform || true
+
+      # 3. Ensure SSH Service is active for remote automation
+      # This is critical if the vDSM image starts with SSH disabled by default
+      if [ "$(synoservicectl --status sshd | grep "stopped")" ]; then
+          synoservicectl --start sshd
+      fi
+
+      echo "Provisioning complete. 'terraform' is ready for deployment."

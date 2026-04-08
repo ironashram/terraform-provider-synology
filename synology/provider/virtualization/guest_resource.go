@@ -708,8 +708,9 @@ func (f *GuestResource) ValidateConfig(
 		diags := data.Disks.ElementsAs(ctx, &disks, true)
 		if !diags.HasError() {
 			for i, d := range disks {
-				hasImage := (!d.ImageID.IsNull() && !d.ImageID.IsUnknown() && d.ImageID.ValueString() != "") ||
-					(!d.ImageName.IsNull() && !d.ImageName.IsUnknown() && d.ImageName.ValueString() != "")
+				hasImage := d.ImageID.IsUnknown() || d.ImageName.IsUnknown() ||
+					(!d.ImageID.IsNull() && d.ImageID.ValueString() != "") ||
+					(!d.ImageName.IsNull() && d.ImageName.ValueString() != "")
 
 				if !hasImage {
 					// create_type=0: empty disk — size must be > 0
@@ -732,8 +733,8 @@ func (f *GuestResource) ValidateConfig(
 		diags := data.Networks.ElementsAs(ctx, &nics, true)
 		if !diags.HasError() {
 			for i, n := range nics {
-				hasID := !n.ID.IsNull() && !n.ID.IsUnknown() && n.ID.ValueString() != ""
-				hasName := !n.Name.IsNull() && !n.Name.IsUnknown() && n.Name.ValueString() != ""
+				hasID := n.ID.IsUnknown() || (!n.ID.IsNull() && n.ID.ValueString() != "")
+				hasName := n.Name.IsUnknown() || (!n.Name.IsNull() && n.Name.ValueString() != "")
 				if !hasID && !hasName {
 					resp.Diagnostics.AddAttributeError(
 						path.Root("network"),

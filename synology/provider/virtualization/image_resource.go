@@ -3,6 +3,7 @@ package virtualization
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -27,6 +28,11 @@ import (
 
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &ImageResource{}
+
+// errImageNotFound is returned by getImage when the named image is absent
+// from VMM. Treated specially by Read so stale state can be pruned instead
+// of erroring the whole plan.
+var errImageNotFound = errors.New("image not found")
 
 func NewImageResource() resource.Resource {
 	return &ImageResource{}
@@ -333,10 +339,35 @@ func (f *ImageResource) Create(
 		}
 	}
 
-	// Read back the image to get used_size
+	// Read back the image to get used_size and storage_id
 	img, err := f.getImage(ctx, data.Name.ValueString())
 	if err == nil && img != nil {
 		data.UsedSize = types.Int64Value(img.UsedSize)
+		if data.StorageID.IsUnknown() || data.StorageID.IsNull() {
+			if len(img.Storages) > 0 {
+				data.StorageID = types.StringValue(img.Storages[0].ID)
+			}
+		}
+	}
+
+	// storage_id is Computed, must be known after apply. Resolve from
+	// storage_name as a last resort if getImage didn't surface it.
+	if data.StorageID.IsUnknown() || data.StorageID.IsNull() {
+		storageName := data.StorageName.ValueString()
+		if storageName != "" {
+			storages, lerr := f.client.StorageList(ctx)
+			if lerr == nil {
+				for _, s := range storages.Storages {
+					if s.Name == storageName {
+						data.StorageID = types.StringValue(s.ID)
+						break
+					}
+				}
+			}
+		}
+		if data.StorageID.IsUnknown() {
+			data.StorageID = types.StringValue("")
+		}
 	}
 
 	// Save data into Terraform state
@@ -358,6 +389,23 @@ func (f *ImageResource) Delete(
 
 	// Start Delete the image
 	if err := f.client.ImageDelete(ctx, imageName); err != nil {
+		// DSM returns "[402] Operation failed" when the image is still
+		// attached to a guest. The generic code is unhelpful, so add a
+		// hint pointing at the likely cause and the manual workarounds.
+		if strings.Contains(err.Error(), "402") {
+			resp.Diagnostics.AddError(
+				"Failed to delete image",
+				fmt.Sprintf(
+					"Unable to delete image %q: %s\n\n"+
+						"This typically means the image is still attached to a running guest. "+
+						"Detach it from all guests (or power them off) and retry. "+
+						"If you are replacing the image (e.g. content changed), "+
+						"'tofu taint' the guest first so TF re-applies it after the image is recreated.",
+					imageName, err,
+				),
+			)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Failed to delete image",
 			fmt.Sprintf("Unable to delete image, got error: %s", err),
@@ -379,6 +427,12 @@ func (f *ImageResource) Read(
 
 	image, err := f.getImage(ctx, data.Name.ValueString())
 	if err != nil {
+		if errors.Is(err, errImageNotFound) {
+			// Image was removed out of band — prune from state so the
+			// plan can recreate it instead of failing the refresh.
+			resp.State.RemoveResource(ctx)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"Failed to list images",
 			fmt.Sprintf("Unable to list images, got error: %s", err),
@@ -407,7 +461,7 @@ func (f *ImageResource) getImage(ctx context.Context, name string) (*virtualizat
 		}
 	}
 
-	return nil, fmt.Errorf("image %s not found", name)
+	return nil, fmt.Errorf("%w: %s", errImageNotFound, name)
 }
 
 // Update implements resource.Resource.

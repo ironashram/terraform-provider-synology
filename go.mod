@@ -231,7 +231,4 @@ require (
 
 tool github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
 
-// Local dev override: point go-synology at the fork while the
-// GuestApply/get_setting work is in flight. Remove once a tagged release
-// on ironashram/go-synology is pinned above.
-replace github.com/synology-community/go-synology => ../go-synology
+replace github.com/synology-community/go-synology => github.com/ironashram/go-synology v0.1.13-ironashram

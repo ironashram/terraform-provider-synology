@@ -48,12 +48,14 @@ type GuestResourceModel struct {
 	StorageID   types.String `tfsdk:"storage_id"`
 	StorageName types.String `tfsdk:"storage_name"`
 	// AutoRun     types.Int64  `tfsdk:"autorun"`
-	VcpuNum   types.Int64 `tfsdk:"vcpu_num"`
-	VramSize  types.Int64 `tfsdk:"vram_size"`
-	Disks     types.Set   `tfsdk:"disk"`
-	Networks  types.Set   `tfsdk:"network"`
-	IsoImages types.Set   `tfsdk:"iso"`
-	Run       types.Bool  `tfsdk:"run"`
+	VcpuNum     types.Int64  `tfsdk:"vcpu_num"`
+	VramSize    types.Int64  `tfsdk:"vram_size"`
+	UseOvmf     types.Bool   `tfsdk:"use_ovmf"`
+	MachineType types.String `tfsdk:"machine_type"`
+	Disks       types.Set    `tfsdk:"disk"`
+	Networks    types.Set    `tfsdk:"network"`
+	IsoImages   types.Set    `tfsdk:"iso"`
+	Run         types.Bool   `tfsdk:"run"`
 }
 
 // Schema implements resource.Resource.
@@ -145,6 +147,14 @@ See [examples/resources/synology_virtualization_guest](https://github.com/synolo
 				MarkdownDescription: "Run the guest.",
 				Optional:            true,
 			},
+			"use_ovmf": schema.BoolAttribute{
+				MarkdownDescription: "Use OVMF (UEFI) firmware instead of legacy BIOS. Unset leaves VMM's default (legacy BIOS).",
+				Optional:            true,
+			},
+			"machine_type": schema.StringAttribute{
+				MarkdownDescription: "QEMU machine type. Supported values: `pc` (i440FX, VMM default), `q35`. Unset leaves VMM's default (`pc`).",
+				Optional:            true,
+			},
 		},
 		Blocks: map[string]schema.Block{
 			"disk": schema.SetNestedBlock{
@@ -159,6 +169,14 @@ See [examples/resources/synology_virtualization_guest](https://github.com/synolo
 							Validators: []validator.Int64{
 								int64validator.AtLeast(10240),
 							},
+						},
+						"controller": schema.Int64Attribute{
+							MarkdownDescription: "Disk bus controller. VMM-internal numeric id: `3` = SATA, `32` = IDE, `64` = VirtIO SCSI.",
+							Optional:            true,
+						},
+						"unmap": schema.BoolAttribute{
+							MarkdownDescription: "Enable space reclamation (UNMAP/TRIM) for this disk. Requires a controller that supports it (VirtIO SCSI).",
+							Optional:            true,
 						},
 						"image_id": schema.StringAttribute{
 							MarkdownDescription: "ID of the image.",
@@ -190,6 +208,10 @@ See [examples/resources/synology_virtualization_guest](https://github.com/synolo
 						},
 						"mac": schema.StringAttribute{
 							MarkdownDescription: "MAC address.",
+							Optional:            true,
+						},
+						"model": schema.Int64Attribute{
+							MarkdownDescription: "NIC model. VMM-internal numeric id: `1` = VirtIO, `2` = E1000.",
 							Optional:            true,
 						},
 					},
@@ -258,6 +280,9 @@ func (f *GuestResource) Create(
 			resp.Diagnostics.AddError("Failed to read disks", "Unable to read disk configuration")
 			return
 		}
+		// Note: controller / unmap are NOT wired into the create payload — DSM's
+		// Guest.create method silently drops them. They get applied post-create
+		// via GuestApply (which uses Guest.set v1 with a diff payload).
 		for _, v := range elements {
 			disk := virtualization.VDisk{}
 			if (v.ImageID.IsNull() || v.ImageID.IsUnknown()) &&
@@ -300,6 +325,9 @@ func (f *GuestResource) Create(
 			nic := virtualization.VNIC{
 				ID:  v.ID.ValueString(),
 				Mac: v.Mac.ValueString(),
+			}
+			if !v.Model.IsNull() && !v.Model.IsUnknown() {
+				nic.Model = v.Model.ValueInt64()
 			}
 
 			// Resolve network name: "default" → first available, or exact/case-insensitive match.
@@ -370,43 +398,19 @@ func (f *GuestResource) Create(
 	}
 	data.ID = types.StringValue(res.ID)
 
-	// Step 5: Set vcpu_num and vram_size via the documented "set" method.
-	// These are not create parameters per the API guide.
-	vcpuNum := data.VcpuNum.ValueInt64()
-	vramSize := data.VramSize.ValueInt64()
-	if vcpuNum > 0 || vramSize > 0 {
-		setReq := virtualization.GuestUpdate{
-			ID: res.ID,
-		}
-		if vcpuNum > 0 {
-			setReq.VcpuNum = vcpuNum
-		}
-		if vramSize > 0 {
-			setReq.VramSize = vramSize
-		}
-		if err := f.client.GuestUpdate(c, setReq); err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to configure guest CPU/RAM",
-				fmt.Sprintf("Guest was created but CPU/RAM configuration failed: %s", err),
-			)
-			return
-		}
-	}
-
-	// Step 6: Mount ISO images if configured (via the internal set API).
-	isoImages := f.buildIsoImages(ctx, data)
-	if len(isoImages) == 2 {
-		err = f.client.GuestUpdate(c, virtualization.GuestUpdate{
-			ID:        data.ID.ValueString(),
-			IsoImages: isoImages,
-		})
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to mount ISO images",
-				fmt.Sprintf("Guest was created but ISO mounting failed: %s", err),
-			)
-			return
-		}
+	// Step 5: Apply everything DSM's create API ignores (CPU, RAM, ISO, disk
+	// controllers, NIC models, use_ovmf, machine_type). Guest.set v1 requires
+	// the full ~25-field payload; sending a subset returns 401 Bad parameter.
+	// applyHardware does a get_setting round trip and submits the full body.
+	if err := f.applyHardware(c, &data); err != nil {
+		resp.Diagnostics.AddError(
+			"Failed to apply guest hardware settings",
+			fmt.Sprintf(
+				"Guest was created but hardware application failed: %s",
+				err,
+			),
+		)
+		return
 	}
 
 	// Step 7: Power on if requested.
@@ -466,6 +470,121 @@ func (f *GuestResource) resolveStorageID(
 	}
 	return "", "", fmt.Errorf("storage %q not found. Available storages: %s",
 		storageName, strings.Join(available, ", "))
+}
+
+// applyHardware post-create configures every field Guest.create ignores:
+// CPU, RAM, ISO mounts, disk controllers, NIC models, use_ovmf, machine_type.
+// Guest.set v1 requires a full ~25-field payload, so we always send one call
+// that covers everything in the resource model.
+func (f *GuestResource) applyHardware(ctx context.Context, data *GuestResourceModel) error {
+	id := data.ID.ValueString()
+	if id == "" {
+		return fmt.Errorf("empty guest id")
+	}
+
+	cur, err := f.client.GuestGetSetting(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get_setting: %w", err)
+	}
+
+	var disks []VDiskModel
+	if !data.Disks.IsNull() && !data.Disks.IsUnknown() {
+		if d := data.Disks.ElementsAs(ctx, &disks, true); d.HasError() {
+			return fmt.Errorf("read disk blocks: %v", d)
+		}
+	}
+	var nics []models.VNic
+	if !data.Networks.IsNull() && !data.Networks.IsUnknown() {
+		if d := data.Networks.ElementsAs(ctx, &nics, true); d.HasError() {
+			return fmt.Errorf("read network blocks: %v", d)
+		}
+	}
+
+	// Positional match: post-create, disks and nics come back in the order
+	// they were sent to GuestCreate. If the lengths don't line up something
+	// went wrong in create — refuse rather than guess a mapping.
+	if len(disks) != len(cur.VDisks) {
+		return fmt.Errorf(
+			"disk count mismatch: config has %d, VMM reports %d — cannot apply hardware",
+			len(disks), len(cur.VDisks),
+		)
+	}
+	if len(nics) != len(cur.VNICs) {
+		return fmt.Errorf(
+			"network count mismatch: config has %d, VMM reports %d — cannot apply hardware",
+			len(nics), len(cur.VNICs),
+		)
+	}
+
+	diskSpecs := make([]virtualization.DiskSpec, 0, len(disks))
+	for i, d := range disks {
+		existing := cur.VDisks[i]
+		mode := existing.VdiskMode
+		if !d.Controller.IsNull() && !d.Controller.IsUnknown() {
+			mode = d.Controller.ValueInt64()
+		}
+		unmap := existing.Unmap
+		if !d.Unmap.IsNull() && !d.Unmap.IsUnknown() {
+			unmap = d.Unmap.ValueBool()
+		}
+		diskSpecs = append(diskSpecs, virtualization.DiskSpec{
+			VdiskID:   existing.VdiskID,
+			Name:      fmt.Sprintf("Virtual Disk %d", i+1),
+			VdiskMode: mode,
+			Unmap:     unmap,
+		})
+	}
+
+	nicSpecs := make([]virtualization.NICSpec, 0, len(nics))
+	for i, n := range nics {
+		existing := cur.VNICs[i]
+		vt := existing.VnicType
+		if !n.Model.IsNull() && !n.Model.IsUnknown() {
+			vt = n.Model.ValueInt64()
+		}
+		nicSpecs = append(nicSpecs, virtualization.NICSpec{
+			VnicID:    existing.VnicID,
+			NetworkID: existing.NetworkID,
+			Mac:       existing.Mac,
+			VnicType:  vt,
+		})
+	}
+
+	var useOvmf *bool
+	if !data.UseOvmf.IsNull() && !data.UseOvmf.IsUnknown() {
+		v := data.UseOvmf.ValueBool()
+		useOvmf = &v
+	}
+	var machineType *string
+	if !data.MachineType.IsNull() && !data.MachineType.IsUnknown() {
+		v := data.MachineType.ValueString()
+		machineType = &v
+	}
+	var vcpuNum *int64
+	if !data.VcpuNum.IsNull() && !data.VcpuNum.IsUnknown() {
+		v := data.VcpuNum.ValueInt64()
+		vcpuNum = &v
+	}
+	var vramMB *int64
+	if !data.VramSize.IsNull() && !data.VramSize.IsUnknown() {
+		v := data.VramSize.ValueInt64()
+		vramMB = &v
+	}
+	var isoImages *[]string
+	if iso := f.buildIsoImages(ctx, *data); iso != nil {
+		isoImages = &iso
+	}
+
+	return f.client.GuestApply(ctx, virtualization.GuestApplyRequest{
+		ID:          id,
+		UseOvmf:     useOvmf,
+		MachineType: machineType,
+		VcpuNum:     vcpuNum,
+		VramSizeMB:  vramMB,
+		IsoImages:   isoImages,
+		Disks:       diskSpecs,
+		NICs:        nicSpecs,
+	})
 }
 
 // buildIsoImages converts the ISO block config into the ["image_id", "unmounted"] array
@@ -582,7 +701,9 @@ func (f *GuestResource) Read(
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Update implements resource.Resource.
+// Update implements resource.Resource. Like Create's step 5, it funnels every
+// mutable field through applyHardware → Guest.set v1. Guest.set requires the
+// full payload; sending a subset returns 401 Bad parameter.
 func (f *GuestResource) Update(
 	ctx context.Context,
 	req resource.UpdateRequest,
@@ -591,40 +712,14 @@ func (f *GuestResource) Update(
 	var data GuestResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
-	var isoImages []string
-
-	if !data.IsoImages.IsNull() && !data.IsoImages.IsUnknown() {
-		isoImages = []string{"unmounted", "unmounted"}
-		var elements []GuestIsoModel
-		diags := data.IsoImages.ElementsAs(ctx, &elements, true)
-
-		if diags.HasError() {
-			resp.Diagnostics.AddError("Failed to read iso_images", "Unable to read iso_images")
-			return
-		}
-
-		if len(elements) > 2 {
-			resp.Diagnostics.AddError("iso length", "iso length must not be greater than 2")
-			return
-		}
-
-		for _, v := range elements {
-			i := 1
-			if !v.Boot.IsNull() && !v.Boot.IsUnknown() && v.Boot.ValueBool() {
-				i = 0
-			}
-
-			isoImages[i] = v.ID.ValueString()
-		}
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
-	err := f.client.GuestUpdate(ctx, virtualization.GuestUpdate{
-		ID:        data.ID.ValueString(),
-		Name:      data.Name.ValueString(),
-		IsoImages: isoImages,
-	})
-	if err != nil {
+	c, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	if err := f.applyHardware(c, &data); err != nil {
 		resp.Diagnostics.AddError(
 			"Failed to update guest",
 			fmt.Sprintf("Unable to update guest, got error: %s", err),
@@ -632,7 +727,6 @@ func (f *GuestResource) Update(
 		return
 	}
 
-	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 

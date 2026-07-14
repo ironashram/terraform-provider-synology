@@ -88,7 +88,10 @@ func TestGuestResourceValidateConfig_ModuleVariables(t *testing.T) {
 			}
 
 			// Build the raw config value: all attributes null except the test inputs
-			schemaType := res.Schema.Type().TerraformType(context.Background()).(tftypes.Object)
+			schemaType, ok := res.Schema.Type().TerraformType(context.Background()).(tftypes.Object)
+			if !ok {
+				t.Fatalf("schema type is not a tftypes.Object")
+			}
 			vals := map[string]tftypes.Value{}
 			for name, at := range schemaType.AttributeTypes {
 				vals[name] = tftypes.NewValue(at, nil)

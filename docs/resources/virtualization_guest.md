@@ -99,10 +99,12 @@ resource "synology_virtualization_guest" "foo" {
 
 - `disk` (Block Set) Disks of the guest. (see [below for nested schema](#nestedblock--disk))
 - `iso` (Block Set) Mounted ISO files for guest. (see [below for nested schema](#nestedblock--iso))
+- `machine_type` (String) QEMU machine type. Supported values: `pc` (i440FX, VMM default), `q35`. Unset leaves VMM's default (`pc`).
 - `network` (Block Set) Networks of the guest. (see [below for nested schema](#nestedblock--network))
 - `run` (Boolean) Run the guest.
 - `storage_id` (String) ID of the storage device.
 - `storage_name` (String) Name of the storage device.
+- `use_ovmf` (Boolean) Use OVMF (UEFI) firmware instead of legacy BIOS. Unset leaves VMM's default (legacy BIOS).
 - `vcpu_num` (Number) Number of virtual CPUs. Set via the API `set` method after creation.
 - `vram_size` (Number) Size of virtual RAM in MB.
 
@@ -115,9 +117,11 @@ resource "synology_virtualization_guest" "foo" {
 
 Optional:
 
+- `controller` (Number) Disk bus controller. VMM-internal numeric id: `3` = SATA, `32` = IDE, `64` = VirtIO SCSI.
 - `image_id` (String) ID of the image.
 - `image_name` (String) Name of the image.
 - `size` (Number) Size of the disk in MB. Must be at least 10240 (10 GB).
+- `unmap` (Boolean) Enable space reclamation (UNMAP/TRIM) for this disk. Requires a controller that supports it (VirtIO SCSI).
 
 
 <a id="nestedblock--iso"></a>
@@ -139,4 +143,5 @@ Optional:
 
 - `id` (String) ID of the network.
 - `mac` (String) MAC address.
+- `model` (Number) NIC model. VMM-internal numeric id: `1` = VirtIO, `2` = E1000.
 - `name` (String) Name of the network.

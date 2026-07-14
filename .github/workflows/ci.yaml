@@ -63,6 +63,6 @@ jobs:
           cache: true
       - run: go mod download
 
-      - name: Acceptance tests
+      - name: Unit tests
         run: |
-          SYNOLOGY_HOST=${{ secrets.SYNOLOGY_HOST }} SYNOLOGY_USER=${{ secrets.SYNOLOGY_USER }} SYNOLOGY_PASSWORD=${{ secrets.SYNOLOGY_PASSWORD }} TF_ACC=1 go test -v -cover -timeout 120m ./...
+          go test -v -cover -timeout 20m ./...

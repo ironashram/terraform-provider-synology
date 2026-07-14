@@ -467,7 +467,7 @@ func ParsePortConfig(value string) ([]ServicePortConfig, error) {
 	// go-connections >= 0.6 reports an empty spec as "invalid proto: ",
 	// keep the classic meaningful error instead.
 	if strings.TrimSpace(value) == "" {
-		return nil, fmt.Errorf("No port specified: %s<empty>", value)
+		return nil, fmt.Errorf("no port specified: %s<empty>", value)
 	}
 	var portConfigs []ServicePortConfig
 	ports, portBindings, err := nat.ParsePortSpecs([]string{value})

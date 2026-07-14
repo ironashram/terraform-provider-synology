@@ -168,7 +168,7 @@ func TestParsePortConfig(t *testing.T) {
 		},
 		{
 			value:         "",
-			expectedError: "No port specified: <empty>",
+			expectedError: "no port specified: <empty>",
 		},
 		{
 			value: "1.1.1.1:80:80",

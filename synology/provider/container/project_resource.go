@@ -596,6 +596,16 @@ func (f *ProjectResource) Update(
 
 	if !servicesChanged && !configChanged && !secretChanged && !contentChanged {
 		tflog.Info(ctx, "No changes detected in services, configs or content, skipping update")
+		plan.Status = state.Status
+		plan.CreatedAt = state.CreatedAt
+		plan.UpdatedAt = state.UpdatedAt
+		if plan.Content.IsUnknown() {
+			plan.Content = state.Content
+		}
+		if plan.Metadata.IsUnknown() {
+			plan.Metadata = state.Metadata
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 		return
 	}
 
@@ -660,12 +670,13 @@ func (f *ProjectResource) Update(
 
 		if proj.Content == content {
 			tflog.Info(ctx, "No changes detected in project, skipping update")
-			resp.Diagnostics.Append(
-				resp.State.SetAttribute(
-					ctx,
-					path.Root("status"),
-					types.StringValue(proj.Status),
-				)...)
+			plan.Status = types.StringValue(proj.Status)
+			plan.CreatedAt = timetypes.NewRFC3339TimeValue(proj.CreatedAt)
+			plan.UpdatedAt = timetypes.NewRFC3339TimeValue(proj.UpdatedAt)
+			if plan.Metadata.IsUnknown() {
+				plan.Metadata = state.Metadata
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 			return
 		}
 

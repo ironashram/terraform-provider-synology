@@ -536,6 +536,12 @@ func (f *ProjectResource) Read(
 	state.Status = types.StringValue(proj.Status)
 	state.CreatedAt = timetypes.NewRFC3339TimeValue(proj.CreatedAt)
 	state.UpdatedAt = timetypes.NewRFC3339TimeValue(proj.UpdatedAt)
+	if proj.Name != "" {
+		state.Name = types.StringValue(proj.Name)
+	}
+	if proj.SharePath != "" {
+		state.SharePath = types.StringValue(proj.SharePath)
+	}
 	if proj.Content != "" {
 		state.Content = types.StringValue(proj.Content)
 	} else {
@@ -569,7 +575,7 @@ func (f *ProjectResource) Update(
 		return
 	}
 
-	var servicesChanged, configChanged, secretChanged bool
+	var servicesChanged, configChanged, secretChanged, contentChanged bool
 
 	if !reflect.DeepEqual(plan.Services, state.Services) {
 		servicesChanged = true
@@ -583,8 +589,13 @@ func (f *ProjectResource) Update(
 		secretChanged = true
 	}
 
-	if !servicesChanged && !configChanged && !secretChanged {
-		tflog.Info(ctx, "No changes detected in services or configs, skipping update")
+	if !plan.Content.IsNull() && !plan.Content.IsUnknown() &&
+		!plan.Content.Equal(state.Content) {
+		contentChanged = true
+	}
+
+	if !servicesChanged && !configChanged && !secretChanged && !contentChanged {
+		tflog.Info(ctx, "No changes detected in services, configs or content, skipping update")
 		return
 	}
 
@@ -599,11 +610,17 @@ func (f *ProjectResource) Update(
 	}
 
 	if configChanged {
-		f.handleConfigs(ctx, plan)
+		resp.Diagnostics.Append(f.handleConfigs(ctx, plan)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	if secretChanged {
-		f.handleSecrets(ctx, plan)
+		resp.Diagnostics.Append(f.handleSecrets(ctx, plan)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	var content string
@@ -633,7 +650,7 @@ func (f *ProjectResource) Update(
 		}
 	}
 
-	if servicesChanged {
+	if servicesChanged || contentChanged {
 
 		proj, err := f.client.ProjectGet(ctx, plan.ID.ValueString())
 		if err != nil {
@@ -721,7 +738,9 @@ func (f *ProjectResource) Update(
 		return
 	}
 
-	plan.Metadata = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	if plan.Metadata.IsUnknown() {
+		plan.Metadata = types.MapValueMust(types.StringType, map[string]attr.Value{})
+	}
 
 	// Save data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)

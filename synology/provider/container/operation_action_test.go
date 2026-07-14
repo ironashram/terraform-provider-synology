@@ -30,7 +30,7 @@ func TestAccContainerOperationAction_basic(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r.UnitTest(t, r.TestCase{
+			r.Test(t, r.TestCase{
 				ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 				Steps: []r.TestStep{
 					{
@@ -50,7 +50,7 @@ func TestAccContainerOperationAction_basic(t *testing.T) {
 }
 
 func TestAccContainerOperationAction_withTrigger(t *testing.T) {
-	r.UnitTest(t, r.TestCase{
+	r.Test(t, r.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 		Steps: []r.TestStep{
 			{
@@ -68,7 +68,7 @@ func TestAccContainerOperationAction_withTrigger(t *testing.T) {
 }
 
 func TestAccContainerOperationAction_multipleActions(t *testing.T) {
-	r.UnitTest(t, r.TestCase{
+	r.Test(t, r.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 		Steps: []r.TestStep{
 			{
@@ -86,7 +86,7 @@ func TestAccContainerOperationAction_multipleActions(t *testing.T) {
 }
 
 func TestAccContainerOperationAction_invalidOperation(t *testing.T) {
-	r.UnitTest(t, r.TestCase{
+	r.Test(t, r.TestCase{
 		ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 		Steps: []r.TestStep{
 			{

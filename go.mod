@@ -231,4 +231,4 @@ require (
 
 tool github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs
 
-replace github.com/synology-community/go-synology => github.com/ironashram/go-synology v0.1.13-ironashram
+replace github.com/synology-community/go-synology => github.com/ironashram/go-synology v0.1.14-ironashram

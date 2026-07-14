@@ -156,15 +156,15 @@ func TestParsePortConfig(t *testing.T) {
 		},
 		{
 			value:         "80/xyz",
-			expectedError: "Invalid proto: xyz",
+			expectedError: "invalid proto: xyz",
 		},
 		{
 			value:         "tcp",
-			expectedError: "Invalid containerPort: tcp",
+			expectedError: "invalid containerPort: tcp",
 		},
 		{
 			value:         "udp",
-			expectedError: "Invalid containerPort: udp",
+			expectedError: "invalid containerPort: udp",
 		},
 		{
 			value:         "",

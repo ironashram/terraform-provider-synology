@@ -121,14 +121,14 @@ func (p *Project) ServicesWithBuild() []string {
 	servicesBuild := p.Services.Filter(func(s ServiceConfig) bool {
 		return s.Build != nil && s.Build.Context != ""
 	})
-	return slices.Collect(maps.Keys(servicesBuild))
+	return slices.AppendSeq(make([]string, 0, len(servicesBuild)), maps.Keys(servicesBuild))
 }
 
 func (p *Project) ServicesWithExtends() []string {
 	servicesExtends := p.Services.Filter(func(s ServiceConfig) bool {
 		return s.Extends != nil && *s.Extends != (ExtendsConfig{})
 	})
-	return slices.Collect(maps.Keys(servicesExtends))
+	return slices.AppendSeq(make([]string, 0, len(servicesExtends)), maps.Keys(servicesExtends))
 }
 
 func (p *Project) ServicesWithDependsOn() []string {

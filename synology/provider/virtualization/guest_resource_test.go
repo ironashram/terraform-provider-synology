@@ -3,11 +3,13 @@ package virtualization_test
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	r "github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/synology-community/terraform-provider-synology/synology/acctest"
 	"github.com/synology-community/terraform-provider-synology/synology/provider/virtualization"
@@ -62,36 +64,44 @@ func TestGuestResourceValidateConfig_ModuleVariables(t *testing.T) {
 		},
 	}
 
+	stringVal := func(v types.String) tftypes.Value {
+		switch {
+		case v.IsUnknown():
+			return tftypes.NewValue(tftypes.String, tftypes.UnknownValue)
+		case v.IsNull():
+			return tftypes.NewValue(tftypes.String, nil)
+		default:
+			return tftypes.NewValue(tftypes.String, v.ValueString())
+		}
+	}
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create a GuestResource instance
 			guestResource := &virtualization.GuestResource{}
 
-			// Create a mock config with the test values
-			model := virtualization.GuestResourceModel{
-				Name:        types.StringValue("test-vm"),
-				StorageID:   tc.storageID,
-				StorageName: tc.storageName,
-				VcpuNum:     types.Int64Value(4),
-				VramSize:    types.Int64Value(4096),
-			}
-
 			res := resource.SchemaResponse{}
 
-			// Create a tfsdk.Config from the model
 			guestResource.Schema(context.Background(), resource.SchemaRequest{}, &res)
 			if res.Diagnostics.HasError() {
 				t.Fatalf("Failed to get schema: %v", res.Diagnostics)
 			}
 
+			// Build the raw config value: all attributes null except the test inputs
+			schemaType := res.Schema.Type().TerraformType(context.Background()).(tftypes.Object)
+			vals := map[string]tftypes.Value{}
+			for name, at := range schemaType.AttributeTypes {
+				vals[name] = tftypes.NewValue(at, nil)
+			}
+			vals["name"] = tftypes.NewValue(tftypes.String, "test-vm")
+			vals["storage_id"] = stringVal(tc.storageID)
+			vals["storage_name"] = stringVal(tc.storageName)
+			vals["vcpu_num"] = tftypes.NewValue(tftypes.Number, big.NewFloat(4))
+			vals["vram_size"] = tftypes.NewValue(tftypes.Number, big.NewFloat(4096))
+
 			config := tfsdk.Config{
 				Schema: res.Schema,
-			}
-
-			// Set the config values
-			diags := config.Get(context.Background(), model)
-			if diags.HasError() {
-				t.Fatalf("Failed to set config: %v", diags)
+				Raw:    tftypes.NewValue(schemaType, vals),
 			}
 
 			// Test ValidateConfig
@@ -148,7 +158,7 @@ func TestAccGuestResource_basic(t *testing.T) {
 	}
 	for _, tt := range testCases {
 		t.Run(tt.Name, func(t *testing.T) {
-			r.UnitTest(t, r.TestCase{
+			r.Test(t, r.TestCase{
 				ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 				Steps: []r.TestStep{
 					{

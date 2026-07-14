@@ -15,7 +15,7 @@ import (
 )
 
 func TestAccISOFunction_Null(t *testing.T) {
-	resource.UnitTest(t, resource.TestCase{
+	resource.Test(t, resource.TestCase{
 		TerraformVersionChecks: []tfversion.TerraformVersionCheck{
 			tfversion.SkipBelow(version.Must(version.NewVersion("1.8.0"))),
 		},
@@ -52,7 +52,7 @@ func TestAccISOFunction_Basic(t *testing.T) {
 	}
 	for _, tt := range testCases {
 		t.Run(tt.Name, func(t *testing.T) {
-			resource.UnitTest(t, resource.TestCase{
+			resource.Test(t, resource.TestCase{
 				ProtoV6ProviderFactories: acctest.ProtoV6ProviderFactories(t),
 				Steps: []resource.TestStep{
 					{

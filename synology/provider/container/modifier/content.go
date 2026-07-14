@@ -38,6 +38,12 @@ func (m useArgumentsForUnknownContent) PlanModifyString(
 		return
 	}
 
+	// Explicitly configured content wins verbatim, only synthesize content
+	// from the structured schema when the attribute is absent from config.
+	if !req.ConfigValue.IsNull() && req.ConfigValue.ValueString() != "" {
+		return
+	}
+
 	// Get the current plan value - Should run after config modification
 	var config models.ProjectResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &config)...)

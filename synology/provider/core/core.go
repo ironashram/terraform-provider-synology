@@ -11,15 +11,22 @@ func buildName(providerName, resourceName string) string {
 
 func Resources() []func() resource.Resource {
 	return []func() resource.Resource{
+		NewCertificateImportResource,
+		NewCertificateServiceBindingResource,
+		NewDirectoryOIDCSSOResource,
 		NewPackageResource,
 		NewPackageFeedResource,
+		NewReverseProxyResource,
+		NewShareNFSPrivilegeResource,
 		NewTaskResource,
+		NewTaskRunResource,
 		NewEventResource,
 	}
 }
 
 func DataSources() []func() datasource.DataSource {
 	return []func() datasource.DataSource{
+		NewCertificateDataSource,
 		NewNetworkDataSource,
 	}
 }

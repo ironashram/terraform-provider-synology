@@ -2,12 +2,17 @@
 page_title: "Core: synology_core_task"
 subcategory: "Core"
 description: |-
-  A Generic API Resource for making calls to the Synology DSM API.
+  Manages a DSM Task Scheduler entry.
+  This resource models script-based DSM scheduled tasks. It supports steady-state drift
+  detection for the task owner, enabled state, script body, task type, and schedule.
 ---
 
 # Core: Task (Resource)
 
-A Generic API Resource for making calls to the Synology DSM API.
+Manages a DSM Task Scheduler entry.
+
+This resource models script-based DSM scheduled tasks. It supports steady-state drift
+detection for the task owner, enabled state, script body, task type, and schedule.
 
 
 
@@ -16,17 +21,19 @@ A Generic API Resource for making calls to the Synology DSM API.
 
 ### Required
 
-- `name` (String) The name of the task to install.
-- `user` (String) The user that will execute the task.
+- `name` (String) DSM task name.
+- `user` (String) DSM user that executes the task. Use `root` for root-owned tasks.
 
 ### Optional
 
-- `run` (Boolean) Whether to run the task after creation.
-- `schedule` (String) Schedule expressed in cron.
-- `script` (String) Script content to run in the task.
-- `service` (String) Systemctl service to change state.
-- `when` (String) When to run the task. Valid values are `apply` and `destroy`.
+- `enabled` (Boolean) Whether the task is enabled. Default: `true`.
+- `run` (Boolean) Whether to run the task as an apply/destroy hook. Default: `false`.
+- `schedule` (String) Schedule expressed as a fixed 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`.
+- `script` (String) Shell script content executed by the task.
+- `service` (String) Deprecated placeholder for future non-script task types. Leave unset.
+- `when` (String) When the `run` hook should execute. Valid values are `apply`, `destroy`, and `upgrade`.
 
 ### Read-Only
 
-- `id` (Number) The ID of the task to install.
+- `id` (Number) DSM task ID.
+- `task_type` (String) Task type reported by DSM.

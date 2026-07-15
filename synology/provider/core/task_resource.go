@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
-	"time"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -16,35 +15,60 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/synology-community/go-synology"
+	"github.com/synology-community/go-synology/pkg/api"
 	"github.com/synology-community/go-synology/pkg/api/core"
-	"github.com/synology-community/terraform-provider-synology/synology/util"
 )
 
 type TaskResourceModel struct {
-	ID   types.Int64  `tfsdk:"id"`
-	Name types.String `tfsdk:"name"`
-
-	Service types.String `tfsdk:"service"`
-	Script  types.String `tfsdk:"script"`
-
+	ID       types.Int64  `tfsdk:"id"`
+	Name     types.String `tfsdk:"name"`
+	Service  types.String `tfsdk:"service"`
+	Script   types.String `tfsdk:"script"`
 	Schedule types.String `tfsdk:"schedule"`
 	User     types.String `tfsdk:"user"`
-
-	Run  types.Bool   `tfsdk:"run"`
-	When types.String `tfsdk:"when"`
+	Enabled  types.Bool   `tfsdk:"enabled"`
+	Run      types.Bool   `tfsdk:"run"`
+	When     types.String `tfsdk:"when"`
+	TaskType types.String `tfsdk:"task_type"`
 }
 
-var _ resource.Resource = &TaskResource{}
+type taskDetailRequest struct {
+	ID        int64  `url:"id"`
+	RealOwner string `url:"real_owner,omitempty"`
+}
+
+type taskDetail struct {
+	ID        int64             `json:"id"`
+	Name      string            `json:"name"`
+	Owner     string            `json:"owner"`
+	RealOwner string            `json:"real_owner"`
+	Enable    bool              `json:"enable"`
+	Type      string            `json:"type"`
+	Schedule  core.TaskSchedule `json:"schedule"`
+	Extra     core.TaskExtra    `json:"extra"`
+}
+
+var (
+	_ resource.Resource                = &TaskResource{}
+	_ resource.ResourceWithImportState = &TaskResource{}
+)
+
+var taskDetailMethod = api.Method{
+	API:            "SYNO.Core.TaskScheduler",
+	Method:         "get",
+	Version:        4,
+	ErrorSummaries: api.GlobalErrors,
+}
 
 func NewTaskResource() resource.Resource {
 	return &TaskResource{}
 }
 
 type TaskResource struct {
-	client core.Api
+	client     synology.Api
+	coreClient core.Api
 }
 
-// Create implements resource.Resource.
 func (p *TaskResource) Create(
 	ctx context.Context,
 	req resource.CreateRequest,
@@ -56,109 +80,99 @@ func (p *TaskResource) Create(
 		return
 	}
 
-	if data.Name.IsNull() || data.Name.IsUnknown() {
-		resp.Diagnostics.AddError("Name is required", "Name is required")
-		return
-	}
-
 	taskReq, err := getTaskRequest(data)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create task", err.Error())
+		resp.Diagnostics.AddError("Failed to build task request", err.Error())
 		return
 	}
 
 	var taskCreate func(ctx context.Context, req core.TaskRequest) (*core.TaskResult, error)
 	if taskReq.Owner == "root" {
-		taskCreate = p.client.RootTaskCreate
+		taskCreate = p.coreClient.RootTaskCreate
 	} else {
-		taskCreate = p.client.TaskCreate
+		taskCreate = p.coreClient.TaskCreate
 	}
 
 	res, err := taskCreate(ctx, taskReq)
 	if err != nil {
-		resp.Diagnostics.AddError("Task install failed", err.Error())
+		resp.Diagnostics.AddError("Failed to create task", err.Error())
+		return
+	}
+	if res.ID == nil {
+		resp.Diagnostics.AddError("Failed to create task", "DSM did not return a task ID.")
 		return
 	}
 
-	data.ID = types.Int64PointerValue(res.ID)
-	// Save data into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	data.ID = types.Int64Value(*res.ID)
 
 	if data.Run.ValueBool() && data.When.ValueString() == "apply" {
-		err := p.client.TaskRun(ctx, data.ID.ValueInt64())
-		if err != nil {
+		if err := p.coreClient.TaskRun(ctx, data.ID.ValueInt64()); err != nil {
 			resp.Diagnostics.AddError("Failed to run task", err.Error())
 			return
 		}
 	}
+
+	refreshed, err := p.refreshTaskState(ctx, data, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read created task", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &refreshed)...)
 }
 
-// Update implements resource.Resource.
 func (p *TaskResource) Update(
 	ctx context.Context,
 	req resource.UpdateRequest,
 	resp *resource.UpdateResponse,
 ) {
-	var plan, state TaskResourceModel
-	// Read Terraform configuration data into the model
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	var plan TaskResourceModel
+	var state TaskResourceModel
 
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	taskReq, err := getTaskRequest(plan)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create task", err.Error())
+		resp.Diagnostics.AddError("Failed to build task request", err.Error())
 		return
 	}
 
-	taskReq.ID = state.ID.ValueInt64Pointer()
+	id := state.ID.ValueInt64()
+	taskReq.ID = &id
 
 	var taskUpdate func(ctx context.Context, req core.TaskRequest) (*core.TaskResult, error)
 	if taskReq.Owner == "root" {
-		taskUpdate = p.client.RootTaskUpdate
+		taskUpdate = p.coreClient.RootTaskUpdate
 	} else {
-		taskUpdate = p.client.TaskUpdate
+		taskUpdate = p.coreClient.TaskUpdate
 	}
 
-	_, err = taskUpdate(ctx, taskReq)
-	if err != nil {
-		resp.Diagnostics.AddError("Task install failed", err.Error())
+	if _, err := taskUpdate(ctx, taskReq); err != nil {
+		resp.Diagnostics.AddError("Failed to update task", err.Error())
 		return
 	}
 
-	if plan.Run.ValueBool() != state.Run.ValueBool() {
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("run"), plan.Run)...)
-	}
-
-	if plan.When.ValueString() != state.When.ValueString() {
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("when"), plan.When)...)
-	}
-
-	if plan.Name.ValueString() != state.Name.ValueString() {
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), plan.Name)...)
-	}
-
-	if (!plan.Service.IsNull() && !plan.Service.IsUnknown()) &&
-		(plan.Service.ValueString() != state.Service.ValueString()) {
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("service"), plan.Service)...)
-	}
-
+	plan.ID = state.ID
 	if plan.Run.ValueBool() && plan.When.ValueString() == "upgrade" {
-		err := p.client.TaskRun(ctx, plan.ID.ValueInt64())
-		if err != nil {
+		if err := p.coreClient.TaskRun(ctx, state.ID.ValueInt64()); err != nil {
 			resp.Diagnostics.AddError("Failed to run task", err.Error())
 			return
 		}
 	}
+
+	refreshed, err := p.refreshTaskState(ctx, plan, &state)
+	if err != nil {
+		resp.Diagnostics.AddError("Failed to read updated task", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &refreshed)...)
 }
 
-// Delete implements resource.Resource.
 func (p *TaskResource) Delete(
 	ctx context.Context,
 	req resource.DeleteRequest,
@@ -171,110 +185,115 @@ func (p *TaskResource) Delete(
 	}
 
 	if data.Run.ValueBool() && data.When.ValueString() == "destroy" {
-		err := p.client.TaskRun(ctx, data.ID.ValueInt64())
-		if err != nil {
+		if err := p.coreClient.TaskRun(ctx, data.ID.ValueInt64()); err != nil {
 			resp.Diagnostics.AddError("Failed to run task", err.Error())
 			return
 		}
 	}
 
-	taskID := data.ID.ValueInt64()
-	err := p.client.TaskDelete(ctx, taskID)
-	if err != nil {
-		task, err := p.client.TaskGet(ctx, taskID)
-		// Success, task not found
-		if err != nil && task == nil {
+	if err := p.coreClient.TaskDelete(ctx, data.ID.ValueInt64()); err != nil {
+		if _, readErr := p.coreClient.TaskGet(ctx, data.ID.ValueInt64()); readErr != nil {
 			resp.State.RemoveResource(ctx)
 			return
-		} else {
-			resp.Diagnostics.AddError("Failed to uninstall task", err.Error())
-			return
 		}
+
+		resp.Diagnostics.AddError("Failed to delete task", err.Error())
+		return
 	}
 
 	resp.State.RemoveResource(ctx)
 }
 
-// Metadata implements resource.Resource.
 func (p *TaskResource) Metadata(
-	ctx context.Context,
+	_ context.Context,
 	req resource.MetadataRequest,
 	resp *resource.MetadataResponse,
 ) {
 	resp.TypeName = buildName(req.ProviderTypeName, "task")
 }
 
-// Read implements resource.Resource.
 func (p *TaskResource) Read(
 	ctx context.Context,
 	req resource.ReadRequest,
 	resp *resource.ReadResponse,
 ) {
-	var data TaskResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	var state TaskResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	taskID := data.ID.ValueInt64()
-	_, err := p.client.TaskGet(ctx, taskID)
+	refreshed, err := p.refreshTaskState(ctx, state, &state)
 	if err != nil {
-		resp.State.RemoveResource(ctx)
+		if isTaskNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+
+		resp.Diagnostics.AddError("Failed to read task", err.Error())
+		return
 	}
 
-	// resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &refreshed)...)
 }
 
-// Schema implements resource.Resource.
 func (p *TaskResource) Schema(
 	_ context.Context,
 	_ resource.SchemaRequest,
 	resp *resource.SchemaResponse,
 ) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "A Generic API Resource for making calls to the Synology DSM API.",
+		MarkdownDescription: `Manages a DSM Task Scheduler entry.
+
+This resource models script-based DSM scheduled tasks. It supports steady-state drift
+detection for the task owner, enabled state, script body, task type, and schedule.
+`,
 
 		Attributes: map[string]schema.Attribute{
 			"id": schema.Int64Attribute{
-				MarkdownDescription: "The ID of the task to install.",
+				MarkdownDescription: "DSM task ID.",
 				Computed:            true,
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "The name of the task to install.",
+				MarkdownDescription: "DSM task name.",
 				Required:            true,
 			},
 			"schedule": schema.StringAttribute{
-				MarkdownDescription: "Schedule expressed in cron.",
+				MarkdownDescription: "Schedule expressed as a fixed 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`.",
 				Optional:            true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
-						regexp.MustCompile(
-							`(@(annually|yearly|monthly|weekly|daily|hourly|reboot))|(@every (\d+(ns|us|µs|ms|s|m|h))+)|((((\d+,)+\d+|(\d+(\/|-)\d+)|\d+|\*) ?){5,7})`,
-						),
-						"value must contain a valid cron expression",
+						cronTaskSchedulePattern(),
+						"value must contain a supported fixed 5-field cron expression or a supported macro",
 					),
 				},
 			},
 			"service": schema.StringAttribute{
-				MarkdownDescription: "Systemctl service to change state.",
+				MarkdownDescription: "Deprecated placeholder for future non-script task types. Leave unset.",
 				Optional:            true,
 			},
 			"script": schema.StringAttribute{
-				MarkdownDescription: "Script content to run in the task.",
+				MarkdownDescription: "Shell script content executed by the task.",
 				Optional:            true,
 			},
 			"user": schema.StringAttribute{
-				MarkdownDescription: "The user that will execute the task.",
+				MarkdownDescription: "DSM user that executes the task. Use `root` for root-owned tasks.",
 				Required:            true,
 			},
+			"enabled": schema.BoolAttribute{
+				MarkdownDescription: "Whether the task is enabled. Default: `true`.",
+				Optional:            true,
+				Computed:            true,
+				Default:             booldefault.StaticBool(true),
+			},
 			"run": schema.BoolAttribute{
-				MarkdownDescription: "Whether to run the task after creation.",
+				MarkdownDescription: "Whether to run the task as an apply/destroy hook. Default: `false`.",
 				Optional:            true,
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 			},
 			"when": schema.StringAttribute{
-				MarkdownDescription: "When to run the task. Valid values are `apply` and `destroy`.",
+				MarkdownDescription: "When the `run` hook should execute. Valid values are `apply`, `destroy`, and `upgrade`.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("apply"),
@@ -282,22 +301,24 @@ func (p *TaskResource) Schema(
 					stringvalidator.OneOf("apply", "destroy", "upgrade"),
 				},
 			},
+			"task_type": schema.StringAttribute{
+				MarkdownDescription: "Task type reported by DSM.",
+				Computed:            true,
+			},
 		},
 	}
 }
 
-func (f *TaskResource) Configure(
-	ctx context.Context,
+func (p *TaskResource) Configure(
+	_ context.Context,
 	req resource.ConfigureRequest,
 	resp *resource.ConfigureResponse,
 ) {
-	// Prevent panic if the provider has not been configured.
 	if req.ProviderData == nil {
 		return
 	}
 
 	client, ok := req.ProviderData.(synology.Api)
-
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
@@ -306,11 +327,11 @@ func (f *TaskResource) Configure(
 				req.ProviderData,
 			),
 		)
-
 		return
 	}
 
-	f.client = client.CoreAPI()
+	p.client = client
+	p.coreClient = client.CoreAPI()
 }
 
 func (p *TaskResource) ImportState(
@@ -320,23 +341,116 @@ func (p *TaskResource) ImportState(
 ) {
 	id, err := strconv.ParseInt(req.ID, 10, 64)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to parse ID", err.Error())
+		resp.Diagnostics.AddError("Invalid import ID", err.Error())
 		return
 	}
 
-	task, err := p.client.TaskGet(ctx, id)
+	state := TaskResourceModel{
+		ID:      types.Int64Value(id),
+		Run:     types.BoolValue(false),
+		When:    types.StringValue("apply"),
+		Enabled: types.BoolValue(true),
+	}
+
+	refreshed, err := p.refreshTaskState(ctx, state, nil)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to find task", err.Error())
+		resp.Diagnostics.AddError("Failed to read imported task", err.Error())
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("version"), task.ID)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &refreshed)...)
+}
+
+func (p *TaskResource) refreshTaskState(
+	ctx context.Context,
+	data TaskResourceModel,
+	previous *TaskResourceModel,
+) (TaskResourceModel, error) {
+	detail, err := p.getTaskDetail(ctx, data.ID.ValueInt64())
+	if err != nil {
+		return TaskResourceModel{}, err
+	}
+
+	data.Name = types.StringValue(detail.Name)
+	data.User = types.StringValue(detail.Owner)
+	data.Enabled = types.BoolValue(detail.Enable)
+	data.TaskType = types.StringValue(detail.Type)
+
+	if detail.Extra.Script != "" {
+		data.Script = types.StringValue(detail.Extra.Script)
+	} else {
+		data.Script = types.StringNull()
+	}
+	data.Service = types.StringNull()
+
+	if previous != nil &&
+		!previous.Schedule.IsNull() &&
+		!previous.Schedule.IsUnknown() &&
+		previous.Schedule.ValueString() != "" &&
+		taskScheduleMatchesSpec(previous.Schedule.ValueString(), detail.Schedule) {
+		data.Schedule = previous.Schedule
+	} else {
+		rendered, err := renderTaskSchedule(detail.Schedule)
+		if err != nil {
+			return TaskResourceModel{}, err
+		}
+		if rendered == "" {
+			data.Schedule = types.StringNull()
+		} else {
+			data.Schedule = types.StringValue(rendered)
+		}
+	}
+
+	if previous != nil {
+		data.Run = previous.Run
+		data.When = previous.When
+	}
+	if data.Run.IsNull() || data.Run.IsUnknown() {
+		data.Run = types.BoolValue(false)
+	}
+	if data.When.IsNull() || data.When.IsUnknown() || data.When.ValueString() == "" {
+		data.When = types.StringValue("apply")
+	}
+
+	return data, nil
+}
+
+func (p *TaskResource) getTaskDetail(ctx context.Context, id int64) (*taskDetail, error) {
+	tasks, err := p.coreClient.TaskList(ctx, core.ListTaskRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	var realOwner string
+	found := false
+	for _, task := range tasks.Tasks {
+		if task.ID != nil && *task.ID == id {
+			realOwner = task.RealOwner
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("task %d not found", id)
+	}
+
+	detail, err := api.Get[taskDetail](p.client, ctx, &taskDetailRequest{
+		ID:        id,
+		RealOwner: realOwner,
+	}, taskDetailMethod)
+	if err != nil {
+		return nil, err
+	}
+
+	return detail, nil
 }
 
 func newTaskSchedule() core.TaskSchedule {
 	return core.TaskSchedule{
+		DateType:             0,
 		WeekDay:              "0,1,2,3,4,5,6",
 		MonthlyWeek:          []string{},
+		RepeatDate:           1001,
 		RepeatMinStoreConfig: []int64{1, 5, 10, 15, 20, 30},
 		RepeatHourStoreConfig: []int64{
 			1,
@@ -366,67 +480,182 @@ func newTaskSchedule() core.TaskSchedule {
 	}
 }
 
-func parseSchedule(c string) (res core.TaskSchedule, err error) {
-	if c == "" {
-		return
+func getTaskRequest(data TaskResourceModel) (core.TaskRequest, error) {
+	if !data.Service.IsNull() && !data.Service.IsUnknown() && data.Service.ValueString() != "" {
+		return core.TaskRequest{}, fmt.Errorf("service-based tasks are not supported yet")
 	}
 
-	s, err := util.ParseStandard(c)
-	if err != nil {
-		return
+	if data.Script.IsNull() || data.Script.IsUnknown() || data.Script.ValueString() == "" {
+		return core.TaskRequest{}, fmt.Errorf("script is required")
 	}
 
-	t := newTaskSchedule()
-
-	t.Minute = s.Minute
-	t.Hour = s.Hour
-	t.RepeatDate = s.RepeatDate
-	t.RepeatHour = s.RepeatHour
-	t.RepeatMin = s.RepeatMin
-
-	if t.DateType == 0 && t.RepeatDate == 0 {
-		t.RepeatDate = 1001
-	}
-	return t, nil
-}
-
-func getTaskRequest(data TaskResourceModel) (taskReq core.TaskRequest, err error) {
-	taskType := "script"
-
-	if !data.Script.IsNull() && !data.Script.IsUnknown() && data.Script.ValueString() != "" {
-		taskType = "script"
-	}
-
-	user := data.User.ValueString()
-
-	taskReq = core.TaskRequest{
+	taskReq := core.TaskRequest{
 		Name:      data.Name.ValueString(),
+		Owner:     data.User.ValueString(),
 		RealOwner: "root",
-		Owner:     user,
-		Type:      taskType,
+		Type:      "script",
+		Enable:    data.Enabled.ValueBool(),
 		Extra: core.TaskExtra{
 			Script: data.Script.ValueString(),
 		},
 	}
 
 	if !data.Schedule.IsNull() && !data.Schedule.IsUnknown() && data.Schedule.ValueString() != "" {
-		schedule, e := parseSchedule(data.Schedule.ValueString())
-		if e != nil {
-			err = e
-			return
+		schedule, err := parseTaskScheduleSpec(data.Schedule.ValueString())
+		if err != nil {
+			return core.TaskRequest{}, err
 		}
 		taskReq.Schedule = schedule
 	} else {
-		t := newTaskSchedule()
-		pkgRunTime := time.Now().Local().Add(-time.Minute * 5)
-		t.Date = fmt.Sprintf(
-			"%d-%02d-%02d",
-			pkgRunTime.Year(),
-			pkgRunTime.Month(),
-			pkgRunTime.Day(),
-		)
-		taskReq.Schedule = t
+		taskReq.Schedule = newTaskSchedule()
 	}
 
 	return taskReq, nil
+}
+
+func parseTaskScheduleSpec(spec string) (core.TaskSchedule, error) {
+	schedule := newTaskSchedule()
+	spec = strings.TrimSpace(spec)
+	switch spec {
+	case "":
+		return schedule, nil
+	case "@daily":
+		return schedule, nil
+	case "@weekly":
+		schedule.WeekDay = "0"
+		return schedule, nil
+	}
+
+	parts := strings.Fields(spec)
+	if len(parts) != 5 {
+		return core.TaskSchedule{}, fmt.Errorf(
+			"unsupported task schedule %q: expected 5 fields",
+			spec,
+		)
+	}
+
+	minute, err := parseTaskScheduleNumber(parts[0], 0, 59, "minute")
+	if err != nil {
+		return core.TaskSchedule{}, err
+	}
+	hour, err := parseTaskScheduleNumber(parts[1], 0, 23, "hour")
+	if err != nil {
+		return core.TaskSchedule{}, err
+	}
+	if parts[2] != "*" {
+		return core.TaskSchedule{}, fmt.Errorf(
+			"unsupported task schedule %q: day-of-month must be *",
+			spec,
+		)
+	}
+	if parts[3] != "*" {
+		return core.TaskSchedule{}, fmt.Errorf(
+			"unsupported task schedule %q: month must be *",
+			spec,
+		)
+	}
+	weekDay, err := parseTaskScheduleWeekDay(parts[4])
+	if err != nil {
+		return core.TaskSchedule{}, err
+	}
+
+	schedule.Minute = minute
+	schedule.Hour = hour
+	schedule.WeekDay = weekDay
+
+	return schedule, nil
+}
+
+func parseTaskScheduleNumber(
+	value string,
+	minValue int64,
+	maxValue int64,
+	label string,
+) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", label, value)
+	}
+	if parsed < minValue || parsed > maxValue {
+		return 0, fmt.Errorf("invalid %s %q", label, value)
+	}
+	return parsed, nil
+}
+
+func parseTaskScheduleWeekDay(value string) (string, error) {
+	if value == "*" {
+		return "0,1,2,3,4,5,6", nil
+	}
+
+	values := strings.Split(value, ",")
+	parsed := make([]string, 0, len(values))
+	for _, part := range values {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return "", fmt.Errorf("invalid weekday list %q", value)
+		}
+		day, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || day < 0 || day > 6 {
+			return "", fmt.Errorf("invalid weekday %q", part)
+		}
+		parsed = append(parsed, strconv.FormatInt(day, 10))
+	}
+
+	return strings.Join(parsed, ","), nil
+}
+
+func renderTaskSchedule(schedule core.TaskSchedule) (string, error) {
+	if schedule.Hour < 0 || schedule.Hour > 23 || schedule.Minute < 0 || schedule.Minute > 59 {
+		return "", fmt.Errorf("unsupported DSM task schedule: invalid hour/minute")
+	}
+	if schedule.RepeatHour != 0 || schedule.RepeatMin != 0 {
+		return "", fmt.Errorf(
+			"unsupported DSM task schedule: repeating intervals are not supported",
+		)
+	}
+	if schedule.DateType != 0 {
+		return "", fmt.Errorf("unsupported DSM task schedule: date_type %d", schedule.DateType)
+	}
+	if schedule.RepeatDate != 0 && schedule.RepeatDate != 1001 {
+		return "", fmt.Errorf("unsupported DSM task schedule: repeat_date %d", schedule.RepeatDate)
+	}
+	if len(schedule.MonthlyWeek) > 0 {
+		return "", fmt.Errorf("unsupported DSM task schedule: monthly_week is not supported")
+	}
+
+	weekDay := strings.TrimSpace(schedule.WeekDay)
+	if weekDay == "" || weekDay == "0,1,2,3,4,5,6" {
+		return fmt.Sprintf("%d %d * * *", schedule.Minute, schedule.Hour), nil
+	}
+
+	return fmt.Sprintf("%d %d * * %s", schedule.Minute, schedule.Hour, weekDay), nil
+}
+
+func taskScheduleMatchesSpec(spec string, schedule core.TaskSchedule) bool {
+	parsed, err := parseTaskScheduleSpec(spec)
+	if err != nil {
+		return false
+	}
+
+	return parsed.DateType == schedule.DateType &&
+		parsed.Minute == schedule.Minute &&
+		parsed.Hour == schedule.Hour &&
+		parsed.WeekDay == schedule.WeekDay &&
+		parsed.RepeatDate == schedule.RepeatDate &&
+		parsed.RepeatHour == schedule.RepeatHour &&
+		parsed.RepeatMin == schedule.RepeatMin
+}
+
+func cronTaskSchedulePattern() *regexp.Regexp {
+	return regexp.MustCompile(
+		`^(@daily|@weekly|([0-5]?\d)\s+([01]?\d|2[0-3])\s+\*\s+\*\s+(\*|[0-6](,[0-6])*))$`,
+	)
+}
+
+func isTaskNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	return strings.Contains(strings.ToLower(err.Error()), "not found")
 }

@@ -3,6 +3,7 @@ package container
 import (
 	"context"
 	"fmt"
+	pathpkg "path"
 	"reflect"
 	"slices"
 	"strings"
@@ -202,6 +203,68 @@ func (f *ProjectResource) handleSecrets(
 				return
 			}
 		}
+	}
+
+	return
+}
+
+// refreshProjectConfigContent re-reads uploaded config files from the project
+// share so manual edits on the NAS surface as drift. Read-only: configs
+// content is not Computed, so Create/Update state must stay equal to the plan.
+func (f *ProjectResource) refreshProjectConfigContent(
+	ctx context.Context,
+	data *models.ProjectResourceModel,
+) (diags diag.Diagnostics) {
+	if data.SharePath.IsNull() ||
+		data.SharePath.IsUnknown() ||
+		data.Configs.IsNull() ||
+		data.Configs.IsUnknown() {
+		return
+	}
+
+	elements := map[string]models.Config{}
+	diags = data.Configs.ElementsAs(ctx, &elements, true)
+	if diags.HasError() {
+		return
+	}
+
+	changed := false
+	for key, cfg := range elements {
+		if cfg.File.IsNull() || cfg.File.IsUnknown() || cfg.File.ValueString() == "" {
+			continue
+		}
+
+		filePath := pathpkg.Join(data.SharePath.ValueString(), cfg.File.ValueString())
+		file, err := f.fsClient.Download(ctx, filePath, "download")
+		if err != nil {
+			// A missing file is drift, not a read failure: null content
+			// diffs against the config and the next apply re-uploads it.
+			if _, notFound := err.(filestation.FileNotFoundError); notFound {
+				cfg.Content = types.StringNull()
+				elements[key] = cfg
+				changed = true
+				continue
+			}
+			diags.AddError(
+				"Failed to refresh project config content",
+				fmt.Sprintf("Unable to download config %q from %q: %s", key, filePath, err),
+			)
+			return
+		}
+
+		cfg.Content = types.StringValue(file.Content)
+		elements[key] = cfg
+		changed = true
+	}
+
+	if !changed {
+		return
+	}
+
+	configs, mapDiags := types.MapValueFrom(ctx, models.Config{}.ModelType(), elements)
+	diags.Append(mapDiags...)
+	if !diags.HasError() {
+		data.Configs = configs
 	}
 
 	return
@@ -546,6 +609,11 @@ func (f *ProjectResource) Read(
 		state.Content = types.StringValue(proj.Content)
 	} else {
 		state.Content = types.StringNull()
+	}
+
+	resp.Diagnostics.Append(f.refreshProjectConfigContent(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)

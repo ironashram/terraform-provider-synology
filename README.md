@@ -24,8 +24,9 @@ It has diverged deliberately and no longer tracks upstream. Reasons:
 - Acceptance tests are gated behind `TF_ACC=1` and run against a real NAS. CI runs unit
   tests only.
 
-Published on the OpenTofu registry as `ironashram/synology`. Versions are tagged
-`vX.Y.Z-ironashram`.
+Published on the OpenTofu registry as `ironashram/synology`. Versions are tagged plain
+`vX.Y.Z` from 0.8.0 on (earlier `vX.Y.Z-ironashram` tags are semver prereleases and stay
+resolvable by exact pin).
 
 ## Usage
 
@@ -34,7 +35,7 @@ terraform {
   required_providers {
     synology = {
       source  = "ironashram/synology"
-      version = "0.8.0-ironashram"
+      version = "0.8.0"
     }
   }
 }
@@ -98,10 +99,11 @@ Docs are generated with `go generate ./...` (requires a terraform binary on PATH
 
 ## Release
 
-Tag `vX.Y.Z-ironashram` on `main` and push. goreleaser builds and signs the release, the
-registry picks it up from GitHub releases. Publish the release draft immediately: the
-OpenTofu registry scanner records a version error if it sees the tag while the release is
-still a draft.
+Tag `vX.Y.Z` on `main` and push. goreleaser builds and signs the release, the registry
+picks it up from GitHub releases. Publish the release draft immediately: the OpenTofu
+registry scanner records a version error if it sees the tag while the release is still a
+draft. Do not use suffixed tags: semver treats them as prereleases and the registry UI
+only lists providers with at least one stable version.
 
 ## License
 

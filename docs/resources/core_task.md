@@ -28,7 +28,7 @@ detection for the task owner, enabled state, script body, task type, and schedul
 
 - `enabled` (Boolean) Whether the task is enabled. Default: `true`.
 - `run` (Boolean) Whether to run the task as an apply/destroy hook. Default: `false`.
-- `schedule` (String) Schedule expressed as a fixed 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`.
+- `schedule` (String) Schedule expressed as a 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`. Intra-day repeats are supported as `*/N * * * *` (every N minutes, N one of 1, 5, 10, 15, 20, 30) or `M */N * * *` (every N hours, N between 1 and 23). Day-of-month and month must be `*`.
 - `script` (String) Shell script content executed by the task.
 - `service` (String) Deprecated placeholder for future non-script task types. Leave unset.
 - `when` (String) When the `run` hook should execute. Valid values are `apply`, `destroy`, and `upgrade`.

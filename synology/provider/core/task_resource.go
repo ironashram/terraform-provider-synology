@@ -259,7 +259,7 @@ detection for the task owner, enabled state, script body, task type, and schedul
 				Required:            true,
 			},
 			"schedule": schema.StringAttribute{
-				MarkdownDescription: "Schedule expressed as a fixed 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`.",
+				MarkdownDescription: "Schedule expressed as a 5-field cron string such as `17 3 * * *` or `17 3 * * 0,1,2,3,4,5,6`. Intra-day repeats are supported as `*/N * * * *` (every N minutes, N one of 1, 5, 10, 15, 20, 30) or `M */N * * *` (every N hours, N between 1 and 23). Day-of-month and month must be `*`.",
 				Optional:            true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
@@ -534,14 +534,6 @@ func parseTaskScheduleSpec(spec string) (core.TaskSchedule, error) {
 		)
 	}
 
-	minute, err := parseTaskScheduleNumber(parts[0], 0, 59, "minute")
-	if err != nil {
-		return core.TaskSchedule{}, err
-	}
-	hour, err := parseTaskScheduleNumber(parts[1], 0, 23, "hour")
-	if err != nil {
-		return core.TaskSchedule{}, err
-	}
 	if parts[2] != "*" {
 		return core.TaskSchedule{}, fmt.Errorf(
 			"unsupported task schedule %q: day-of-month must be *",
@@ -559,8 +551,56 @@ func parseTaskScheduleSpec(spec string) (core.TaskSchedule, error) {
 		return core.TaskSchedule{}, err
 	}
 
-	schedule.Minute = minute
-	schedule.Hour = hour
+	// Intra-day repeats run from hour 0 through last_work_hour, which is what DSM
+	// stores for a "every N minutes/hours" task created in its own UI.
+	lastWorkHour := int64(23)
+
+	switch {
+	case strings.HasPrefix(parts[0], "*/"):
+		if parts[1] != "*" {
+			return core.TaskSchedule{}, fmt.Errorf(
+				"unsupported task schedule %q: a minute interval requires hour *",
+				spec,
+			)
+		}
+		interval, err := parseTaskScheduleInterval(
+			strings.TrimPrefix(parts[0], "*/"), taskRepeatMinuteValues, "minute interval")
+		if err != nil {
+			return core.TaskSchedule{}, err
+		}
+		schedule.RepeatMin = interval
+		schedule.Minute = 0
+		schedule.Hour = 0
+		schedule.LastWorkHour = &lastWorkHour
+
+	case strings.HasPrefix(parts[1], "*/"):
+		minute, err := parseTaskScheduleNumber(parts[0], 0, 59, "minute")
+		if err != nil {
+			return core.TaskSchedule{}, err
+		}
+		interval, err := parseTaskScheduleInterval(
+			strings.TrimPrefix(parts[1], "*/"), taskRepeatHourValues, "hour interval")
+		if err != nil {
+			return core.TaskSchedule{}, err
+		}
+		schedule.RepeatHour = interval
+		schedule.Minute = minute
+		schedule.Hour = 0
+		schedule.LastWorkHour = &lastWorkHour
+
+	default:
+		minute, err := parseTaskScheduleNumber(parts[0], 0, 59, "minute")
+		if err != nil {
+			return core.TaskSchedule{}, err
+		}
+		hour, err := parseTaskScheduleNumber(parts[1], 0, 23, "hour")
+		if err != nil {
+			return core.TaskSchedule{}, err
+		}
+		schedule.Minute = minute
+		schedule.Hour = hour
+	}
+
 	schedule.WeekDay = weekDay
 
 	return schedule, nil
@@ -608,9 +648,9 @@ func renderTaskSchedule(schedule core.TaskSchedule) (string, error) {
 	if schedule.Hour < 0 || schedule.Hour > 23 || schedule.Minute < 0 || schedule.Minute > 59 {
 		return "", fmt.Errorf("unsupported DSM task schedule: invalid hour/minute")
 	}
-	if schedule.RepeatHour != 0 || schedule.RepeatMin != 0 {
+	if schedule.RepeatHour != 0 && schedule.RepeatMin != 0 {
 		return "", fmt.Errorf(
-			"unsupported DSM task schedule: repeating intervals are not supported",
+			"unsupported DSM task schedule: minute and hour intervals are mutually exclusive",
 		)
 	}
 	if schedule.DateType != 0 {
@@ -625,10 +665,17 @@ func renderTaskSchedule(schedule core.TaskSchedule) (string, error) {
 
 	weekDay := strings.TrimSpace(schedule.WeekDay)
 	if weekDay == "" || weekDay == "0,1,2,3,4,5,6" {
-		return fmt.Sprintf("%d %d * * *", schedule.Minute, schedule.Hour), nil
+		weekDay = "*"
 	}
 
-	return fmt.Sprintf("%d %d * * %s", schedule.Minute, schedule.Hour, weekDay), nil
+	switch {
+	case schedule.RepeatMin != 0:
+		return fmt.Sprintf("*/%d * * * %s", schedule.RepeatMin, weekDay), nil
+	case schedule.RepeatHour != 0:
+		return fmt.Sprintf("%d */%d * * %s", schedule.Minute, schedule.RepeatHour, weekDay), nil
+	default:
+		return fmt.Sprintf("%d %d * * %s", schedule.Minute, schedule.Hour, weekDay), nil
+	}
 }
 
 func taskScheduleMatchesSpec(spec string, schedule core.TaskSchedule) bool {
@@ -648,8 +695,31 @@ func taskScheduleMatchesSpec(spec string, schedule core.TaskSchedule) bool {
 
 func cronTaskSchedulePattern() *regexp.Regexp {
 	return regexp.MustCompile(
-		`^(@daily|@weekly|([0-5]?\d)\s+([01]?\d|2[0-3])\s+\*\s+\*\s+(\*|[0-6](,[0-6])*))$`,
+		`^(@daily|@weekly|((\*/\d{1,2}\s+\*)|([0-5]?\d\s+(\*/\d{1,2}|[01]?\d|2[0-3])))\s+\*\s+\*\s+(\*|[0-6](,[0-6])*))$`,
 	)
+}
+
+// DSM only offers these intra-day repeat intervals; they mirror the
+// repeat_min_store_config / repeat_hour_store_config values it returns.
+var (
+	taskRepeatMinuteValues = []int64{1, 5, 10, 15, 20, 30}
+	taskRepeatHourValues   = []int64{
+		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+		13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+	}
+)
+
+func parseTaskScheduleInterval(value string, allowed []int64, label string) (int64, error) {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", label, value)
+	}
+	for _, candidate := range allowed {
+		if parsed == candidate {
+			return parsed, nil
+		}
+	}
+	return 0, fmt.Errorf("unsupported %s %q: DSM accepts %v", label, value, allowed)
 }
 
 func isTaskNotFound(err error) bool {

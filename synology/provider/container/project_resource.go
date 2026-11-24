@@ -801,15 +801,6 @@ func (f *ProjectResource) Update(
 			return
 		}
 	}
-	if !plan.Run.IsNull() && !plan.Run.IsUnknown() && plan.Run.ValueBool() {
-		_, err := f.client.ProjectRestartStream(ctx, docker.ProjectStreamRequest{
-			ID: plan.ID.ValueString(),
-		})
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to restart project", err.Error())
-			return
-		}
-	}
 
 	proj, err := f.client.ProjectGet(ctx, plan.ID.ValueString())
 	if err != nil {

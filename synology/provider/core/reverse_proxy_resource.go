@@ -27,6 +27,7 @@ const (
 	reverseProxyAPIName       = "SYNO.Core.AppPortal.ReverseProxy"
 	reverseProxyProtocolHTTP  = int64(0)
 	reverseProxyProtocolHTTPS = int64(1)
+	reverseProxyWriteTimeout  = 5 * time.Minute
 )
 
 var (
@@ -826,6 +827,9 @@ func (r *ReverseProxyResource) createEntry(
 		Entry: string(entryJSON),
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, reverseProxyWriteTimeout)
+	defer cancel()
+
 	_, err = api.Get[struct{}](r.client, ctx, &req, reverseProxyCreateMethod)
 	return err
 }
@@ -844,6 +848,9 @@ func (r *ReverseProxyResource) updateEntry(
 		Entry: string(entryJSON),
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, reverseProxyWriteTimeout)
+	defer cancel()
+
 	_, err = api.Get[struct{}](r.client, ctx, &req, reverseProxyUpdateMethod)
 	return err
 }
@@ -858,6 +865,9 @@ func (r *ReverseProxyResource) deleteEntry(ctx context.Context, uuid string) err
 	req := reverseProxyDeleteRequest{
 		UUIDs: string(uuidsJSON),
 	}
+
+	ctx, cancel := context.WithTimeout(ctx, reverseProxyWriteTimeout)
+	defer cancel()
 
 	_, err = api.Get[struct{}](r.client, ctx, &req, reverseProxyDeleteMethod)
 	return err

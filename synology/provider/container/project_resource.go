@@ -48,6 +48,8 @@ type ProjectResource struct {
 	coreClient core.Api
 }
 
+const projectApplyTimeout = 30 * time.Minute
+
 const projectDescription = `Manages Docker Compose projects using Synology Container Manager.
 
 Deploy and manage multi-container Docker applications using compose-style configuration. Supports services, networks, volumes, secrets, and configs.
@@ -332,6 +334,9 @@ func (f *ProjectResource) Create(
 	req resource.CreateRequest,
 	resp *resource.CreateResponse,
 ) {
+	ctx, cancel := context.WithTimeout(ctx, projectApplyTimeout)
+	defer cancel()
+
 	var data models.ProjectResourceModel
 
 	// Read Terraform plan data into the model
@@ -492,6 +497,9 @@ func (f *ProjectResource) Delete(
 	req resource.DeleteRequest,
 	resp *resource.DeleteResponse,
 ) {
+	ctx, cancel := context.WithTimeout(ctx, projectApplyTimeout)
+	defer cancel()
+
 	var data models.ProjectResourceModel
 	// Read Terraform configuration data into the model
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -625,6 +633,9 @@ func (f *ProjectResource) Update(
 	req resource.UpdateRequest,
 	resp *resource.UpdateResponse,
 ) {
+	ctx, cancel := context.WithTimeout(ctx, projectApplyTimeout)
+	defer cancel()
+
 	var plan, state models.ProjectResourceModel
 
 	if plan.Metadata.IsNull() || plan.Metadata.IsUnknown() {
